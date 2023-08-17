@@ -9,7 +9,9 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include "nccl-headers/error.h"
 #include "nccl_ofi.h"
+#include "nccl_ofi_log.h"
 #if HAVE_CUDA
 #include "nccl_ofi_cuda.h"
 #endif
@@ -619,15 +621,22 @@ static ncclResult_t reg_mr_base_comm(nccl_net_ofi_comm_t *base_comm, void *data,
 			   mhandle);
 }
 
+#define SEND_COMM_SIGNAL_MSB	(1ULL << 63)
+
 static ncclResult_t reg_mr_send_comm(nccl_net_ofi_send_comm_t *send_comm, void *data,
 					      size_t size, int type, void **mhandle)
 {
-	return reg_mr_base_comm(&send_comm->base, data, size, type, FI_SEND, mhandle);
+	/* TODO: Figure out why not passing here FI_RECV result in
+	 * nccl-tests complain on out of bound values */
+	ncclResult_t result = reg_mr_base_comm(&send_comm->base, data, size, type, FI_RECV | FI_SEND, mhandle);
+	*(uint64_t*)mhandle |= SEND_COMM_SIGNAL_MSB;
+	return result;
 }
 
 static ncclResult_t reg_mr_recv_comm(nccl_net_ofi_recv_comm_t *recv_comm, void *data,
 					      size_t size, int type, void **mhandle)
 {
+	ncclResult_t result;
 	uint64_t access = FI_RECV;
 
 	/* GPU flush target is registered as recv communication buffer
@@ -636,7 +645,8 @@ static ncclResult_t reg_mr_recv_comm(nccl_net_ofi_recv_comm_t *recv_comm, void *
 		access |= FI_REMOTE_READ;
 	}
 
-	return reg_mr_base_comm(&recv_comm->base, data, size, type, access, mhandle);
+	result = reg_mr_base_comm(&recv_comm->base, data, size, type, access, mhandle);
+	return result;
 }
 
 static ncclResult_t dereg_mr_base_comm(struct fid_mr *mr_handle,
@@ -792,7 +802,17 @@ static ncclResult_t recv(nccl_net_ofi_recv_comm_t *recv_comm, int n, void **buff
 		void *desc = NULL;
 
 		if (mr_handles[recv_n] != NULL) {
-			desc = fi_mr_desc(mr_handles[recv_n]);
+			static bool warned = false;
+			uint64_t mhandle_num = (uint64_t)mr_handles[recv_n];
+			struct fid_mr *real_mhandle;
+			if (!warned && (mhandle_num & SEND_COMM_SIGNAL_MSB)) {
+				warned = true;
+				mhandle_num &= ~SEND_COMM_SIGNAL_MSB;
+				NCCL_OFI_WARN("recv(): Got mhandle of send-comm to recv!");
+			}
+			real_mhandle = (struct fid_mr *)mhandle_num;
+
+			desc = fi_mr_desc(real_mhandle);
 		}
 
 		NCCL_OFI_TRACE_RECV(dev_id, r_comm->tag, sizes[recv_n], req, base_req);
@@ -1483,7 +1503,13 @@ static ncclResult_t dereg_mr_send_comm(nccl_net_ofi_send_comm_t *send_comm,
 	}
 
 	struct fid_mr *mr_handle = (struct fid_mr *)mhandle;
-	return dereg_mr_base_comm(mr_handle, &device->key_pool,
+
+	uint64_t mhandle_num = (uint64_t)mr_handle;
+	struct fid_mr *real_mhandle;
+	mhandle_num &= ~SEND_COMM_SIGNAL_MSB;
+	real_mhandle = (struct fid_mr *)mhandle_num;
+
+	return dereg_mr_base_comm(real_mhandle, &device->key_pool,
 				  send_comm->base.dev_id);
 }
 
@@ -1570,8 +1596,21 @@ static ncclResult_t send(nccl_net_ofi_send_comm_t *send_comm, void *data, int si
 	req->dev_id = dev_id;
 	req->direction = NCCL_OFI_SENDRECV_SEND;
 
-	if (mr_handle != NULL)
-		desc = fi_mr_desc(mr_handle);
+	if (mr_handle != NULL) {
+		static bool warned = false;
+		uint64_t mhandle_num = (uint64_t)mr_handle;
+		struct fid_mr *real_mhandle;
+
+		if (!warned && ((mhandle_num & SEND_COMM_SIGNAL_MSB) == 0)) {
+			warned = true;
+			NCCL_OFI_WARN("send(): Didn't got send signal in mhandle!");
+		}
+
+		mhandle_num &= ~SEND_COMM_SIGNAL_MSB;
+		real_mhandle = (struct fid_mr *)mhandle_num;
+
+		desc = fi_mr_desc(real_mhandle);
+	}
 
 	NCCL_OFI_TRACE_SEND(req->dev_id, size, s_comm, 0, req, base_req);
 
