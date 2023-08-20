@@ -626,9 +626,9 @@ static ncclResult_t reg_mr_base_comm(nccl_net_ofi_comm_t *base_comm, void *data,
 static ncclResult_t reg_mr_send_comm(nccl_net_ofi_send_comm_t *send_comm, void *data,
 					      size_t size, int type, void **mhandle)
 {
-	/* TODO: Figure out why not passing here FI_RECV result in
-	 * nccl-tests complain on out of bound values */
-	ncclResult_t result = reg_mr_base_comm(&send_comm->base, data, size, type, FI_RECV | FI_SEND, mhandle);
+	/* TODO: Figure out why not passing here FI_RECV for CUDA buffers
+	 * result in nccl-tests data-integrity issue */
+	ncclResult_t result = reg_mr_base_comm(&send_comm->base, data, size, type, FI_SEND, mhandle);
 	*(uint64_t*)mhandle |= SEND_COMM_SIGNAL_MSB;
 	return result;
 }
@@ -805,6 +805,7 @@ static ncclResult_t recv(nccl_net_ofi_recv_comm_t *recv_comm, int n, void **buff
 			static bool warned = false;
 			uint64_t mhandle_num = (uint64_t)mr_handles[recv_n];
 			struct fid_mr *real_mhandle;
+			assert((mhandle_num & SEND_COMM_SIGNAL_MSB) == 0);
 			if (!warned && (mhandle_num & SEND_COMM_SIGNAL_MSB)) {
 				warned = true;
 				mhandle_num &= ~SEND_COMM_SIGNAL_MSB;
@@ -953,8 +954,11 @@ static ncclResult_t flush(nccl_net_ofi_recv_comm_t *recv_comm, int n, void **buf
 		goto exit;
 	}
 
-	if (mr_handles && mr_handles[flush_n])
+	if (mr_handles && mr_handles[flush_n]) {
+		uint64_t mhandle_num = (uint64_t)mr_handles[flush_n];
 		mr_handle = mr_handles[flush_n];
+		assert((mhandle_num & SEND_COMM_SIGNAL_MSB) == 0);
+	}
 
 	data = buffers[flush_n];
 
@@ -1606,6 +1610,7 @@ static ncclResult_t send(nccl_net_ofi_send_comm_t *send_comm, void *data, int si
 			NCCL_OFI_WARN("send(): Didn't got send signal in mhandle!");
 		}
 
+		assert((mhandle_num & SEND_COMM_SIGNAL_MSB) != 0);
 		mhandle_num &= ~SEND_COMM_SIGNAL_MSB;
 		real_mhandle = (struct fid_mr *)mhandle_num;
 
