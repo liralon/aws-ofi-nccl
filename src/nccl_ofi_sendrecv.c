@@ -545,6 +545,9 @@ static ncclResult_t register_mr_buffers(struct fid_domain *domain, struct fid_ep
 		goto exit;
 	}
 
+	NCCL_OFI_WARN("register_mr_buffers(): key=0x%llx, desc=0x%llx -> data=0x%llx, size=0x%llx, access=0x%llx, type=%x",
+		      (*mr_handle)->key, (uint64_t)((*mr_handle)->mem_desc), (uint64_t)data, size, access, type);
+
 	if (endpoint_mr) {
 		rc = fi_mr_bind(*mr_handle, &ep->fid, 0);
 		if (OFI_UNLIKELY(rc != 0)) {
