@@ -281,7 +281,7 @@ static int configure_ep_inorder(struct fid_ep *ep, int optname, const char* optn
 	return 0;
 }
 
-int configure_nvls_option(void)
+static int configure_nvls_option(void)
 {
 	/* Disable NVLS topology discovery.  There's a bug with EFA
 	 * and NCCL version 2.18.3 and earlier on platforms with
