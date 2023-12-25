@@ -402,6 +402,17 @@ int platform_init(void)
 		goto exit;
 	}
 
+	/* On AWS substrate network, trying to communicate across same indexed
+	 * NICs on different nodes do not help avoiding flow collisions
+	 */
+	NCCL_OFI_INFO(NCCL_INIT | NCCL_NET, "Setting NCCL_CROSS_NIC=1 for AWS substrate network");
+	ret = setenv("NCCL_CROSS_NIC", "1", 0);
+	if (ret != 0) {
+		NCCL_OFI_WARN("Unable to set NCCL_CROSS_NIC");
+		ret = -errno;
+		goto exit;
+	}
+
 	if ((platform_data && !platform_data->net_flush_required) &&
 	    NULL == getenv("NCCL_NET_FORCE_FLUSH")) {
 
